@@ -1,30 +1,79 @@
 import json
 import re
+import threading
 
 from memos import log
 
-
 logger = log.get_logger(__name__)
 
-try:
-    import tiktoken
+# Lazy tiktoken initialization — avoids blocking import on network download.
+# The first call to count_tokens_text() triggers a background init attempt;
+# if tiktoken downloading hangs (no proxy / no cache), we fall back to heuristic.
+# 失败后不标记 _ENC_READY,后续调用可重试(网络恢复后自动生效)。
+_ENC = None
+_ENC_LOCK = threading.Lock()
+_ENC_READY = False
 
-    try:
-        _ENC = tiktoken.encoding_for_model("gpt-4o-mini")
-    except Exception:
-        _ENC = tiktoken.get_encoding("cl100k_base")
 
-    def count_tokens_text(s: str) -> int:
-        return len(_ENC.encode(s or "", disallowed_special=()))
-except Exception:
+def _get_encoding():
+    global _ENC, _ENC_READY
+    if _ENC_READY:
+        return _ENC
+    with _ENC_LOCK:
+        if _ENC_READY:
+            return _ENC
+        _do_init()
+        return _ENC
+
+
+def _do_init():
+    """Try loading tiktoken encoding with a 10s network timeout.
+
+    成功:回写全局 _ENC 并标记 _ENC_READY=True(后续走快速路径)。
+    失败/超时:_ENC 保持 None、_ENC_READY 保持 False,下次调用可重试。
+    """
+    global _ENC, _ENC_READY
+    result = [None]
+    exc = [None]
+
+    def _work():
+        try:
+            import tiktoken
+
+            try:
+                result[0] = tiktoken.encoding_for_model("gpt-4o-mini")
+            except Exception:
+                result[0] = tiktoken.get_encoding("cl100k_base")
+        except Exception as e:
+            exc[0] = e
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(timeout=10)
+    if t.is_alive():
+        logger.warning(
+            "tiktoken init timed out (10s) — network unavailable? using heuristic fallback"
+        )
+        return
+    if exc[0] is not None:
+        logger.warning(f"tiktoken init failed: {exc[0]}, using heuristic fallback")
+        return
+    _ENC = result[0]
+    _ENC_READY = True
+
+
+def count_tokens_text(s: str) -> int:
+    enc = _get_encoding()
+    if enc is not None:
+        return len(enc.encode(s or "", disallowed_special=()))
+
     # Heuristic fallback: zh chars ~1 token, others ~1 token per ~4 chars
-    def count_tokens_text(s: str) -> int:
-        if not s:
-            return 0
-        zh_chars = re.findall(r"[\u4e00-\u9fff]", s)
-        zh = len(zh_chars)
-        rest = len(s) - zh
-        return zh + max(1, rest // 4)
+    if not s:
+        return 0
+    zh_chars = re.findall(r"[\u4e00-\u9fff]", s)
+    zh = len(zh_chars)
+    rest = len(s) - zh
+    return zh + max(1, rest // 4)
 
 
 def derive_key(text: str, max_len: int = 80) -> str:
@@ -97,7 +146,6 @@ def parse_rewritten_response(text: str) -> tuple[bool, dict[int, dict]]:
         try:
             idx = int(k)
         except Exception:
-            # allow integer keys as-is
             if isinstance(k, int):
                 idx = k
             else:

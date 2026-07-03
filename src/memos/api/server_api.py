@@ -37,6 +37,14 @@ app.add_middleware(RequestContextMiddleware, source="server_api")
 # Include routers
 app.include_router(server_router)
 
+# Dashboard 静态资源挂载(单文件 HTML 前端)。
+# 用 __file__ 推导绝对路径,不依赖运行时 CWD(systemd WorkingDirectory 不确定)。
+# 入口文件须命名 index.html(StaticFiles html=True 只认 index.html)。
+# DASHBOARD_ENABLED=false 时静态文件仍可访问,但 /requests /config 端点会 404。
+_DASHBOARD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+os.makedirs(_DASHBOARD_DIR, exist_ok=True)
+app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")
+
 
 @app.get("/health")
 def health_check():

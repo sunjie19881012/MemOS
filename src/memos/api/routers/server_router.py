@@ -42,6 +42,8 @@ from memos.api.product_models import (
     ExistMemCubeIdRequest,
     ExistMemCubeIdResponse,
     GetMemoryDashboardRequest,
+    DashboardConfigResponse,
+    DashboardRequestsResponse,
     GetMemoryPlaygroundRequest,
     GetMemoryRequest,
     GetMemoryResponse,
@@ -508,3 +510,138 @@ def get_memories_dashboard(memory_req: GetMemoryDashboardRequest):
         get_mem_req=memory_req,
         naive_mem_cube=naive_mem_cube,
     )
+
+
+# =============================================================================
+# Dashboard API Endpoints (审计日志 + 运行时配置)
+# =============================================================================
+
+# Dashboard 总开关:默认关闭,开启后才暴露 /requests、/config、/dashboard 静态资源
+_DASHBOARD_ENABLED = os.getenv("DASHBOARD_ENABLED", "false").lower() == "true"
+
+# 配置白名单:只返回这些非敏感字段,绝不 dump 全量 os.environ。
+# 排除: *_API_KEY, *_PASSWORD, *_SECRET, NEO4J_URI, QDRANT_HOST/PORT, *_API_BASE 等。
+_CONFIG_WHITELIST = [
+    "MOS_CHAT_MODEL_PROVIDER",
+    "MOS_CHAT_MODEL",
+    "MOS_EMBEDDER_BACKEND",
+    "MOS_EMBEDDER_MODEL",
+    "EMBEDDING_DIMENSION",
+    "MOS_TEXT_MEM_TYPE",
+    "MOS_ENABLE_REORGANIZE",
+    "ENABLE_CHAT_API",
+]
+
+
+@router.get("/requests", summary="Dashboard: 审计日志(最近请求)", response_model=DashboardRequestsResponse)
+def dashboard_get_requests(limit: int = Query(100, ge=1, le=1000, description="返回条数上限")):
+    """返回最近 N 条 API 调用记录(来自审计缓冲)。
+
+    关闭时返回 404,假装端点不存在。
+    多 worker 下只能看到当前 worker 的记录(单机个人使用默认单 worker)。
+    """
+    if not _DASHBOARD_ENABLED:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    from memos.api.middleware.audit_buffer import audit_buffer
+
+    return {"code": 200, "message": "ok", "data": audit_buffer.get_recent(limit)}
+
+
+@router.get("/config", summary="Dashboard: 运行时配置(白名单脱敏)", response_model=DashboardConfigResponse)
+def dashboard_get_config():
+    """返回白名单内的运行时配置项(模型/嵌入/存储开关等)。
+
+    关闭时返回 404。只暴露非敏感字段,密钥/连接串/拓扑地址均不返回。
+    """
+    if not _DASHBOARD_ENABLED:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    return {
+        "code": 200,
+        "message": "ok",
+        "data": {key: os.getenv(key) for key in _CONFIG_WHITELIST},
+    }
+
+
+# =============================================================================
+# Dashboard Graph & Edit Endpoints
+# =============================================================================
+
+
+@router.post("/export_graph", summary="Dashboard: 导出图谱(节点+边)")
+def dashboard_export_graph(
+    user_name: str = Query(..., description="cube_id/user_name,按实体过滤"),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(200, ge=1, le=500, description="每页条数,上限500防止OOM"),
+):
+    """导出图谱节点和边,供前端 vis-network 渲染。
+
+    底层 export_graph 返回 {nodes, edges:[{source,target,type}], total_nodes, total_edges}。
+    端点层做字段映射:edges 的 source/target → from/to(vis-network 要求)。
+    默认排除已软删节点(status != deleted)和 embedding 字段。
+    """
+    if not _DASHBOARD_ENABLED:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    raw = graph_db.export_graph(
+        page=page,
+        page_size=page_size,
+        user_name=user_name,
+    )
+    # 字段映射:source/target → from/to(vis-network edges 格式)
+    mapped_edges = [
+        {"from": e.get("source"), "to": e.get("target"), "type": e.get("type", "RELATED")}
+        for e in raw.get("edges", [])
+    ]
+    # 节点精简:只保留渲染所需字段
+    nodes = []
+    for n in raw.get("nodes", []):
+        meta = n.get("metadata", {}) or {}
+        nodes.append({
+            "id": n.get("id"),
+            "label": (n.get("memory", "") or "")[:40],  # 截断防止长文本撑爆节点
+            "full_memory": n.get("memory", ""),
+            "memory_type": meta.get("memory_type", "text"),
+            "tags": meta.get("tags", []),
+            "created_at": meta.get("created_at", ""),
+        })
+
+    return {
+        "code": 200,
+        "message": "ok",
+        "data": {
+            "nodes": nodes,
+            "edges": mapped_edges,
+            "total_nodes": raw.get("total_nodes", 0),
+            "total_edges": raw.get("total_edges", 0),
+            "page": page,
+            "page_size": page_size,
+        },
+    }
+
+
+@router.post("/update_memory", summary="Dashboard: 编辑记忆(仅 tags/metadata)")
+def dashboard_update_memory(
+    memory_id: str = Query(..., description="记忆节点 ID"),
+    tags: list[str] | None = Query(None, description="新标签列表(替换)"),
+):
+    """编辑记忆的 tags/metadata。
+
+    ⚠️ 安全约束:禁止修改 memory 文本字段。
+    原因:update_node 不更新 embedding,改文本会导致向量搜索失准(无法自愈)。
+    如需修改内容,请删除后通过 /product/add 重新添加(会重新计算 embedding)。
+    update_node 的 fields 必须扁平(Neo4j 节点是扁平存储,不能传嵌套 dict)。
+    """
+    if not _DASHBOARD_ENABLED:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    fields = {}
+    if tags is not None:
+        fields["tags"] = tags
+
+    if not fields:
+        raise HTTPException(status_code=400, detail="没有可更新的字段(仅支持 tags)")
+
+    graph_db.update_node(id=memory_id, fields=fields)
+    return {"code": 200, "message": "ok", "data": {"memory_id": memory_id, "updated_tags": tags}}

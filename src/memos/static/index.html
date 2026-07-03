@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MemOS Dashboard</title>
+  <script src="/dashboard/vendor/tailwind.min.js"></script>
+  <script src="/dashboard/vendor/vis-network.min.js"></script>
+  <script src="/dashboard/vendor/alpine.min.js" defer></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .scroll-thin::-webkit-scrollbar { width: 6px; }
+    .scroll-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased" x-data="dashboardApp()" x-init="init()" x-cloak>
+
+  <!-- 顶部栏 -->
+  <header class="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between sticky top-0 z-30">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">M</div>
+      <span class="font-semibold text-lg">MemOS Dashboard</span>
+      <span class="text-xs px-2 py-0.5 rounded-full" :class="enabled ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400'" x-text="enabled ? '已启用' : '未启用'"></span>
+    </div>
+    <div class="flex items-center gap-2">
+      <button @click="refreshCurrent()" class="text-sm px-3 py-1.5 rounded-md border border-slate-300 hover:bg-slate-50 transition">刷新</button>
+    </div>
+  </header>
+
+  <div class="flex">
+    <!-- 侧边栏 -->
+    <nav class="w-48 bg-white border-r border-slate-200 min-h-[calc(100vh-57px)] py-4">
+      <template x-for="item in nav" :key="item.key">
+        <a @click.prevent="page = item.key"
+           href="#"
+           :class="page === item.key ? 'bg-indigo-50 text-indigo-700 border-r-2 border-indigo-600' : 'text-slate-600 hover:bg-slate-50'"
+           class="block px-4 py-2.5 text-sm font-medium transition">
+          <span x-text="item.label"></span>
+        </a>
+      </template>
+    </nav>
+
+    <!-- 主内容区 -->
+    <main class="flex-1 p-6 max-h-[calc(100vh-57px)] overflow-y-auto scroll-thin">
+
+      <!-- ============ Memories 页 ============ -->
+      <div x-show="page === 'memories'">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-xl font-semibold">记忆浏览</h2>
+          <button @click="addMemOpen = true" class="text-sm px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">+ 添加记忆</button>
+        </div>
+
+        <!-- 筛选条 -->
+        <div class="bg-white rounded-lg border border-slate-200 p-4 mb-4 flex flex-wrap items-center gap-3">
+          <div class="flex items-center gap-2">
+            <label class="text-sm text-slate-500">Cube ID</label>
+            <input x-model="memCubeId" type="text" placeholder="必填,如 opencode"
+                   class="text-sm px-3 py-1.5 border border-slate-300 rounded-md w-40 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+          </div>
+          <div class="flex items-center gap-2">
+            <label class="text-sm text-slate-500">搜索</label>
+            <input x-model="searchQuery" @keyup.enter="doSearch()" type="text" placeholder="语义搜索..."
+                   class="text-sm px-3 py-1.5 border border-slate-300 rounded-md w-56 outline-none focus:ring-2 focus:ring-indigo-500">
+            <select x-model="searchMode" class="text-sm px-2 py-1.5 border border-slate-300 rounded-md outline-none">
+              <option value="fast">fast</option>
+              <option value="mixture">mixture</option>
+            </select>
+            <button @click="doSearch()" :disabled="!searchQuery.trim()"
+                    class="text-sm px-3 py-1.5 rounded-md bg-indigo-600 text-white disabled:bg-slate-300 hover:bg-indigo-700 transition">搜索</button>
+            <button @click="loadMemories()" class="text-sm px-3 py-1.5 rounded-md border border-slate-300 hover:bg-slate-50">重置列表</button>
+          </div>
+          <!-- tag 筛选器(Categories 简化版) -->
+          <div x-show="allTags.length > 0" class="flex items-center gap-1.5 flex-wrap">
+            <span class="text-xs text-slate-400">标签筛选:</span>
+            <template x-for="tag in allTags" :key="tag">
+              <button @click="toggleTagFilter(tag)"
+                     class="text-xs px-2 py-0.5 rounded transition"
+                     :class="tagFilter.has(tag) ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                     x-text="tag"></button>
+            </template>
+            <button x-show="tagFilter.size > 0" @click="tagFilter.clear(); filterMemories()" class="text-xs text-slate-400 hover:text-slate-600">清除</button>
+          </div>
+        </div>
+
+        <!-- 加载/错误/空状态 -->
+        <template x-if="loading"><div class="text-center py-10 text-slate-400">加载中...</div></template>
+        <template x-if="error"><div class="bg-red-50 text-red-600 p-3 rounded-md text-sm mb-3" x-text="error"></div></template>
+        <template x-if="!loading && memories.length === 0"><div class="text-center py-10 text-slate-400">暂无记忆</div></template>
+
+        <!-- 记忆卡片 -->
+        <div class="space-y-3">
+          <template x-for="mem in memories" :key="mem.id">
+            <div class="bg-white rounded-lg border border-slate-200 p-4 hover:border-indigo-300 transition">
+              <div class="flex justify-between items-start gap-4">
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm text-slate-700 line-clamp-2" x-text="mem.memory || mem.content || '(无内容)'"></p>
+                  <div class="flex flex-wrap gap-1.5 mt-2">
+                    <template x-for="tag in (mem.metadata?.tags || mem.tags || [])" :key="tag">
+                      <span class="text-xs px-2 py-0.5 rounded bg-indigo-50 text-indigo-600" x-text="tag"></span>
+                    </template>
+                    <span class="text-xs text-slate-400" x-text="formatTime(mem.metadata?.created_at || mem.created_at)"></span>
+                  </div>
+                </div>
+                <div class="flex gap-2 shrink-0">
+                  <button @click="showDetail(mem.id)" class="text-xs px-2.5 py-1 rounded border border-slate-300 hover:bg-slate-50">详情</button>
+                  <button @click="softDelete(mem)" class="text-xs px-2.5 py-1 rounded border border-red-300 text-red-600 hover:bg-red-50">删除</button>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 分页 -->
+        <div x-show="!searching && memories.length > 0" class="flex items-center justify-center gap-4 mt-6 text-sm">
+          <button @click="changePage(-1)" :disabled="currentPage <= 1"
+                  class="px-3 py-1.5 rounded border border-slate-300 disabled:opacity-40 hover:bg-slate-50">上一页</button>
+          <span class="text-slate-500">第 <span x-text="currentPage"></span> 页</span>
+          <button @click="changePage(1)" :disabled="memories.length < pageSize"
+                  class="px-3 py-1.5 rounded border border-slate-300 disabled:opacity-40 hover:bg-slate-50">下一页</button>
+        </div>
+      </div>
+
+      <!-- ============ Graph 知识图谱页 ============ -->
+      <div x-show="page === 'graph'">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-xl font-semibold">知识图谱</h2>
+          <div class="flex items-center gap-2 text-sm">
+            <input x-model="graphCubeId" type="text" placeholder="cube_id" class="px-2 py-1 border border-slate-300 rounded-md w-32 outline-none">
+            <select x-model="graphPageSize" class="px-2 py-1 border border-slate-300 rounded-md outline-none">
+              <option value="100">100节点</option>
+              <option value="200">200节点</option>
+              <option value="500">500节点</option>
+            </select>
+            <button @click="loadGraph()" class="px-3 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">加载</button>
+            <span class="text-xs text-slate-400" x-show="graphStats" x-text="graphStats"></span>
+          </div>
+        </div>
+        <template x-if="graphLoading"><div class="text-center py-10 text-slate-400">加载图谱中...(节点多时需数秒)</div></template>
+        <div x-show="!graphLoading" id="graph-container" class="bg-white rounded-lg border border-slate-200" style="height: 600px;"></div>
+        <p class="text-xs text-slate-400 mt-3">提示:拖拽节点可重新布局,滚轮缩放,点击节点显示详情。节点过多时只显示前 N 条。</p>
+      </div>
+
+      <!-- ============ 概览页 ============ -->
+      <div x-show="page === 'overview'">
+        <h2 class="text-xl font-semibold mb-4">概览</h2>
+
+        <template x-if="loading"><div class="text-center py-10 text-slate-400">加载中...</div></template>
+
+        <!-- 统计卡片 -->
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+          <template x-for="(val, key) in statsCards" :key="key">
+            <div class="bg-white rounded-lg border border-slate-200 p-4">
+              <div class="text-xs text-slate-500 mb-1" x-text="key"></div>
+              <div class="text-2xl font-bold text-indigo-600" x-text="val"></div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 实体列表 -->
+        <h3 class="text-sm font-medium text-slate-600 mb-2">实体(Cube)分布</h3>
+        <div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
+              <tr>
+                <th class="text-left px-4 py-2.5 font-medium">Cube ID</th>
+                <th class="text-left px-4 py-2.5 font-medium">类型</th>
+                <th class="text-left px-4 py-2.5 font-medium">记忆数</th>
+                <th class="text-right px-4 py-2.5 font-medium">操作</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <template x-if="entities.length === 0">
+                <tr><td colspan="4" class="text-center py-8 text-slate-400">暂无数据</td></tr>
+              </template>
+              <template x-for="ent in entities" :key="ent.cube_id + '-' + ent.type">
+                <tr class="hover:bg-slate-50">
+                  <td class="px-4 py-2.5 font-mono text-xs" x-text="ent.cube_id"></td>
+                  <td class="px-4 py-2.5">
+                    <span class="text-xs px-2 py-0.5 rounded"
+                          :class="ent.type === 'text' ? 'bg-blue-50 text-blue-600' : ent.type === 'skill' ? 'bg-purple-50 text-purple-600' : ent.type === 'tool' ? 'bg-amber-50 text-amber-600' : 'bg-slate-100 text-slate-500'"
+                          x-text="ent.type"></span>
+                  </td>
+                  <td class="px-4 py-2.5" x-text="ent.total_nodes"></td>
+                  <td class="px-4 py-2.5 text-right">
+                    <button @click="viewEntity(ent.cube_id)" class="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50 mr-1">查看</button>
+                    <button @click="archiveEntity(ent.cube_id)" class="text-xs px-2 py-1 rounded border border-amber-300 text-amber-700 hover:bg-amber-50">归档</button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============ Requests 页 ============ -->
+      <div x-show="page === 'requests'">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-xl font-semibold">API 审计</h2>
+          <div class="flex items-center gap-2 text-sm">
+            <label class="text-slate-500">自动刷新</label>
+            <select x-model="autoRefresh" @change="setupPolling()" class="px-2 py-1 border border-slate-300 rounded-md outline-none">
+              <option value="0">关闭</option>
+              <option value="5000">5s</option>
+              <option value="10000">10s</option>
+            </select>
+            <span class="text-xs text-slate-400" x-show="polling" x-text="'轮询中...'"></span>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
+              <tr>
+                <th class="text-left px-3 py-2 font-medium">时间</th>
+                <th class="text-left px-3 py-2 font-medium">方法</th>
+                <th class="text-left px-3 py-2 font-medium">路径</th>
+                <th class="text-left px-3 py-2 font-medium">状态</th>
+                <th class="text-left px-3 py-2 font-medium">耗时</th>
+                <th class="text-left px-3 py-2 font-medium">trace_id</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <template x-if="requests.length === 0">
+                <tr><td colspan="6" class="text-center py-8 text-slate-400">暂无请求记录</td></tr>
+              </template>
+              <template x-for="(req, idx) in requests" :key="idx">
+                <tr class="hover:bg-slate-50">
+                  <td class="px-3 py-2 text-xs text-slate-500" x-text="formatReqTime(req.ts)"></td>
+                  <td class="px-3 py-2"><span class="text-xs font-mono px-1.5 py-0.5 rounded" :class="methodColor(req.method)" x-text="req.method"></span></td>
+                  <td class="px-3 py-2 font-mono text-xs max-w-xs truncate" x-text="req.path"></td>
+                  <td class="px-3 py-2"><span class="text-xs font-mono" :class="req.status === 200 ? 'text-green-600' : 'text-red-600'" x-text="req.status"></span></td>
+                  <td class="px-3 py-2 text-xs" x-text="req.duration_ms + 'ms'"></td>
+                  <td class="px-3 py-2 font-mono text-xs text-slate-400 max-w-[120px] truncate" x-text="req.trace_id"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <p class="text-xs text-slate-400 mt-3">提示:进程级内存缓冲,重启即清空。多 worker 时仅显示当前 worker 记录。</p>
+      </div>
+
+      <!-- ============ Settings 页 ============ -->
+      <div x-show="page === 'settings'">
+        <h2 class="text-xl font-semibold mb-4">运行时配置</h2>
+        <p class="text-xs text-slate-400 mb-4">仅展示白名单内的非敏感配置项(模型/嵌入/开关等)。密钥、连接串、拓扑地址不暴露。</p>
+
+        <div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
+              <tr>
+                <th class="text-left px-4 py-2.5 font-medium w-1/3">配置项</th>
+                <th class="text-left px-4 py-2.5 font-medium">当前值</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <template x-for="(val, key) in config" :key="key">
+                <tr class="hover:bg-slate-50">
+                  <td class="px-4 py-2.5 font-mono text-xs text-slate-600" x-text="key"></td>
+                  <td class="px-4 py-2.5 font-mono text-xs" :class="val ? 'text-slate-800' : 'text-slate-400 italic'" x-text="val || '(未设置)'"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ============ 详情弹窗(含 Edit tags) ============ -->
+  <div x-show="detailOpen" x-transition.opacity class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" @click.self="detailOpen = false" style="display:none;">
+    <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+      <div class="px-5 py-3 border-b border-slate-200 flex justify-between items-center">
+        <span class="font-medium">记忆详情</span>
+        <button @click="detailOpen = false" class="text-slate-400 hover:text-slate-600">✕</button>
+      </div>
+      <div class="p-5 overflow-y-auto scroll-thin flex-1">
+        <template x-if="detailLoading"><div class="text-center py-8 text-slate-400">加载中...</div></template>
+        <template x-if="!detailLoading && detailData">
+          <div class="space-y-4">
+            <!-- 内容(只读,改内容需删除+重建) -->
+            <div>
+              <div class="text-xs text-slate-400 mb-1">内容(只读,修改请删除后重新添加)</div>
+              <p class="text-sm text-slate-700 bg-slate-50 p-3 rounded-md" x-text="detailData.memory || '(无内容)'"></p>
+            </div>
+            <!-- 标签编辑 -->
+            <div>
+              <div class="text-xs text-slate-400 mb-1">标签</div>
+              <div class="flex flex-wrap gap-1.5 items-center">
+                <template x-for="(tag, i) in editTags" :key="i">
+                  <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-indigo-50 text-indigo-600">
+                    <span x-text="tag"></span>
+                    <button @click="editTags.splice(i, 1)" class="text-indigo-400 hover:text-red-500">✕</button>
+                  </span>
+                </template>
+                <input x-model="newTag" @keydown.enter.prevent="addEditTag()" type="text" placeholder="添加标签后回车"
+                       class="text-xs px-2 py-1 border border-slate-300 rounded outline-none w-32 focus:ring-1 focus:ring-indigo-500">
+                <button @click="saveTags()" class="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700">保存标签</button>
+              </div>
+            </div>
+            <!-- 完整 metadata(JSON 展开) -->
+            <div>
+              <div class="text-xs text-slate-400 mb-1 cursor-pointer" @click="showMetaJson = !showMetaJson">
+                完整 metadata <span x-text="showMetaJson ? '▾' : '▸'"></span>
+              </div>
+              <template x-if="showMetaJson">
+                <pre class="text-xs bg-slate-50 p-3 rounded-md overflow-x-auto font-mono text-slate-600" x-text="JSON.stringify(detailData.metadata, null, 2)"></pre>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Add Memory 弹窗 ============ -->
+  <div x-show="addMemOpen" x-transition.opacity class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" @click.self="addMemOpen = false" style="display:none;">
+    <div class="bg-white rounded-lg shadow-xl max-w-lg w-full overflow-hidden">
+      <div class="px-5 py-3 border-b border-slate-200 flex justify-between items-center">
+        <span class="font-medium">添加记忆</span>
+        <button @click="addMemOpen = false" class="text-slate-400 hover:text-slate-600">✕</button>
+      </div>
+      <div class="p-5 space-y-3">
+        <div>
+          <label class="text-xs text-slate-500 block mb-1">Cube ID(必填)</label>
+          <input x-model="addForm.cubeId" type="text" placeholder="如 opencode"
+                 class="text-sm px-3 py-1.5 border border-slate-300 rounded-md w-full outline-none focus:ring-1 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="text-xs text-slate-500 block mb-1">对话内容(必填,提取记忆的原始文本)</label>
+          <textarea x-model="addForm.content" rows="5" placeholder="如:用户:我今天排查了分片空转问题\n助手:根因是 OMEVPOPE_QUE 队列堆积..."
+                    class="text-sm px-3 py-1.5 border border-slate-300 rounded-md w-full outline-none focus:ring-1 focus:ring-indigo-500"></textarea>
+        </div>
+        <div>
+          <label class="text-xs text-slate-500 block mb-1">自定义标签(逗号分隔)</label>
+          <input x-model="addForm.tags" type="text" placeholder="如: bug-fix, Neo4j"
+                 class="text-sm px-3 py-1.5 border border-slate-300 rounded-md w-full outline-none focus:ring-1 focus:ring-indigo-500">
+        </div>
+        <div class="flex justify-end gap-2 pt-2">
+          <button @click="addMemOpen = false" class="text-sm px-3 py-1.5 rounded-md border border-slate-300 hover:bg-slate-50">取消</button>
+          <button @click="submitAddMemory()" :disabled="addMemLoading"
+                  class="text-sm px-3 py-1.5 rounded-md bg-indigo-600 text-white disabled:bg-slate-300 hover:bg-indigo-700">
+            <span x-show="!addMemLoading">添加(sync)</span>
+            <span x-show="addMemLoading">处理中...</span>
+          </button>
+        </div>
+        <p class="text-xs text-slate-400">使用 sync 模式(阻塞等待 LLM 抽取记忆),数据量大时需数秒。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Toast ============ -->
+  <div x-show="toast" x-transition class="fixed bottom-6 right-6 px-4 py-2.5 rounded-md shadow-lg text-sm z-50"
+       :class="toastType === 'error' ? 'bg-red-600 text-white' : 'bg-slate-800 text-white'" style="display:none;">
+    <span x-text="toastMsg"></span>
+  </div>
+
+<script>
+function dashboardApp() {
+  return {
+    // ===== 路由 =====
+    page: 'memories',
+    nav: [
+      { key: 'memories', label: 'Memories' },
+      { key: 'graph', label: 'Graph' },
+      { key: 'overview', label: '概览' },
+      { key: 'requests', label: 'Requests' },
+      { key: 'settings', label: 'Settings' },
+    ],
+
+    // ===== 全局状态 =====
+    enabled: false,
+    loading: false,
+    error: '',
+    toast: false, toastMsg: '', toastType: 'info',
+    _toastTimer: null,
+
+    // ===== Memories =====
+    memCubeId: 'opencode',
+    memories: [],
+    currentPage: 1,
+    pageSize: 20,
+    searching: false,
+    searchQuery: '', searchMode: 'fast',
+
+    // ===== 详情弹窗(含 Edit tags) =====
+    detailOpen: false, detailLoading: false, detailData: null,
+    showMetaJson: false,
+    editTags: [], newTag: '', _editMemoryId: null,
+
+    // ===== Add Memory =====
+    addMemOpen: false, addMemLoading: false,
+    addForm: { cubeId: 'opencode', content: '', tags: '' },
+
+    // ===== Graph 图谱 =====
+    graphCubeId: 'opencode', graphPageSize: '200',
+    graphLoading: false, graphStats: '', _visNetwork: null,
+
+    // ===== tag 筛选器 =====
+    allTags: [], tagFilter: new Set(), _rawMemories: [],
+
+    // ===== 概览 =====
+    statsCards: {}, entities: [],
+
+    // ===== Requests =====
+    requests: [], autoRefresh: '0', polling: false, _pollTimer: null,
+
+    // ===== Settings =====
+    config: {},
+
+    // ===== 初始化 =====
+    async init() {
+      // 监听页面切换,自动加载对应数据
+      this.$watch('page', (v) => {
+        if (v === 'overview') this.loadOverview();
+        else if (v === 'requests') this.loadRequests();
+        else if (v === 'settings' && Object.keys(this.config).length === 0) this.loadConfig();
+        else if (v === 'graph' && !this._visNetwork) this.loadGraph();
+      });
+      // 检测 Dashboard 是否启用(调 config 端点,404 则未启用)
+      try {
+        const r = await fetch('/product/config');
+        this.enabled = r.ok;
+      } catch { this.enabled = false; }
+      if (this.enabled) { this.loadMemories(); }
+    },
+
+    refreshCurrent() {
+      if (this.page === 'memories') this.loadMemories();
+      else if (this.page === 'overview') this.loadOverview();
+      else if (this.page === 'requests') this.loadRequests();
+      else if (this.page === 'settings') this.loadConfig();
+    },
+
+    showToast(msg, type = 'info') {
+      this.toastMsg = msg; this.toastType = type; this.toast = true;
+      clearTimeout(this._toastTimer);
+      this._toastTimer = setTimeout(() => this.toast = false, 3000);
+    },
+
+    // ===== API 封装 =====
+    async api(url, opts = {}) {
+      const r = await fetch(url, {
+        headers: { 'Content-Type': 'application/json' },
+        ...opts,
+      });
+      if (!r.ok) {
+        const txt = await r.text().catch(() => '');
+        throw new Error(`HTTP ${r.status}: ${txt.slice(0, 100)}`);
+      }
+      return r.json();
+    },
+
+    // ===== Memories 操作 =====
+    async loadMemories() {
+      if (!this.memCubeId.trim()) { this.showToast('Cube ID 必填', 'error'); return; }
+      this.loading = true; this.error = ''; this.searching = false;
+      try {
+        const data = await this.api('/product/get_memory', {
+          method: 'POST',
+          body: JSON.stringify({ mem_cube_id: this.memCubeId, page: this.currentPage, page_size: this.pageSize }),
+        });
+        this.memories = this.extractMemories(data);
+        this._rawMemories = [...this.memories];
+        this.rebuildTagList();
+      } catch (e) { this.error = e.message; }
+      this.loading = false;
+    },
+
+    async doSearch() {
+      const q = this.searchQuery.trim();
+      if (!q) return;
+      if (!this.memCubeId.trim()) { this.showToast('Cube ID 必填', 'error'); return; }
+      this.loading = true; this.error = ''; this.searching = true;
+      try {
+        const data = await this.api('/product/search', {
+          method: 'POST',
+          body: JSON.stringify({ query: q, user_id: this.memCubeId, mode: this.searchMode, top_k: 20 }),
+        });
+        this.memories = this.extractSearchResults(data);
+        this._rawMemories = [...this.memories];
+        this.rebuildTagList();
+      } catch (e) { this.error = e.message; }
+      this.loading = false;
+    },
+
+    extractMemories(data) {
+      // get_memory 返回 {text_mem: [{cube_id, memories:[{id,memory,metadata}], total_nodes}], ...}
+      const d = data?.data;
+      if (Array.isArray(d?.text_mem) && d.text_mem.length > 0) {
+        return d.text_mem[0].memories || [];
+      }
+      if (Array.isArray(d?.memories)) return d.memories;
+      if (Array.isArray(d)) return d;
+      return [];
+    },
+
+    extractSearchResults(data) {
+      // search 与 get_memory 结构一致:{text_mem: [{cube_id, memories:[{id,memory,metadata}]}]}
+      return this.extractMemories(data);
+    },
+
+    changePage(delta) {
+      const next = this.currentPage + delta;
+      if (next < 1) return;
+      this.currentPage = next;
+      this.loadMemories();
+    },
+
+    async showDetail(id) {
+      this.detailOpen = true; this.detailLoading = true; this.detailData = null;
+      this.showMetaJson = false; this.newTag = '';
+      try {
+        const data = await this.api(`/product/get_memory/${id}`);
+        this.detailData = data?.data;
+        // 初始化编辑标签(从 metadata.tags)
+        const tags = this.detailData?.metadata?.tags || [];
+        this.editTags = Array.isArray(tags) ? [...tags] : [];
+        this._editMemoryId = id;
+      } catch (e) { this.detailData = { error: e.message }; }
+      this.detailLoading = false;
+    },
+
+    addEditTag() {
+      const t = this.newTag.trim();
+      if (t && !this.editTags.includes(t)) this.editTags.push(t);
+      this.newTag = '';
+    },
+
+    async saveTags() {
+      if (!this._editMemoryId) return;
+      try {
+        const params = new URLSearchParams({ memory_id: this._editMemoryId });
+        this.editTags.forEach(t => params.append('tags', t));
+        await this.api(`/product/update_memory?${params}`, { method: 'POST' });
+        this.showToast('标签已更新');
+        // 更新本地 detailData
+        if (this.detailData?.metadata) this.detailData.metadata.tags = [...this.editTags];
+        if (this.searching) this.doSearch(); else this.loadMemories();
+      } catch (e) { this.showToast('保存失败: ' + e.message, 'error'); }
+    },
+
+    // ===== tag 筛选器 =====
+    rebuildTagList() {
+      const set = new Set();
+      this._rawMemories.forEach(m => {
+        (m.metadata?.tags || []).forEach(t => set.add(t));
+      });
+      this.allTags = [...set].sort();
+    },
+
+    toggleTagFilter(tag) {
+      if (this.tagFilter.has(tag)) this.tagFilter.delete(tag);
+      else this.tagFilter.add(tag);
+      this.tagFilter = new Set(this.tagFilter); // 触发响应式
+      this.filterMemories();
+    },
+
+    filterMemories() {
+      if (this.tagFilter.size === 0) {
+        this.memories = [...this._rawMemories];
+      } else {
+        this.memories = this._rawMemories.filter(m =>
+          (m.metadata?.tags || []).some(t => this.tagFilter.has(t))
+        );
+      }
+    },
+
+    // ===== Add Memory =====
+    async submitAddMemory() {
+      if (!this.addForm.cubeId.trim() || !this.addForm.content.trim()) {
+        this.showToast('Cube ID 和内容必填', 'error'); return;
+      }
+      this.addMemLoading = true;
+      try {
+        const tags = this.addForm.tags.trim() ? this.addForm.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
+        const messages = [{ role: 'user', content: this.addForm.content }];
+        const body = { messages, user_id: this.addForm.cubeId, async_mode: 'sync' };
+        if (tags.length) body.custom_tags = tags;
+        await this.api('/product/add', { method: 'POST', body: JSON.stringify(body) });
+        this.showToast('记忆添加成功');
+        this.addMemOpen = false;
+        this.addForm.content = ''; this.addForm.tags = '';
+        // 刷新列表
+        this.memCubeId = this.addForm.cubeId;
+        this.currentPage = 1;
+        this.loadMemories();
+      } catch (e) { this.showToast('添加失败: ' + e.message, 'error'); }
+      this.addMemLoading = false;
+    },
+
+    async softDelete(mem) {
+      const cubeId = mem.metadata?.user_name || mem.user_name || this.memCubeId;
+      const recordId = mem.id;
+      if (!confirm(`确认移入回收站?\n\nCube: ${cubeId}\nID: ${recordId}\n\n(软删除,可通过 record_id 接口恢复)`)) return;
+      try {
+        await this.api('/product/delete_memory_by_record_id', {
+          method: 'POST',
+          body: JSON.stringify({ mem_cube_id: cubeId, record_id: recordId, hard_delete: false }),
+        });
+        this.showToast('已移入回收站');
+        if (this.searching) this.doSearch(); else this.loadMemories();
+      } catch (e) { this.showToast('删除失败: ' + e.message, 'error'); }
+    },
+
+    // ===== 概览操作 =====
+    async loadOverview() {
+      this.loading = true;
+      try {
+        // get_memory_dashboard 需要 mem_cube_id 才有数据(不传返回空)
+        const cubeId = this.memCubeId || 'opencode';
+        const data = await this.api('/product/get_memory_dashboard', {
+          method: 'POST',
+          body: JSON.stringify({ mem_cube_id: cubeId }),
+        });
+        const d = data?.data || {};
+        // 实体列表:按类型分组,只展示 total_nodes > 0 的(空的没意义)
+        const allCubes = [];
+        let totalText = 0, totalPref = 0, totalTool = 0, totalSkill = 0;
+        (d.text_mem || []).forEach(t => { totalText += (t.total_nodes || 0); if (t.total_nodes > 0) allCubes.push({cube_id: t.cube_id, type:'text', total_nodes: t.total_nodes}); });
+        (d.pref_mem || []).forEach(t => { totalPref += (t.total_nodes || 0); if (t.total_nodes > 0) allCubes.push({cube_id: t.cube_id, type:'pref', total_nodes: t.total_nodes}); });
+        (d.tool_mem || []).forEach(t => { totalTool += (t.total_nodes || 0); if (t.total_nodes > 0) allCubes.push({cube_id: t.cube_id, type:'tool', total_nodes: t.total_nodes}); });
+        (d.skill_mem || []).forEach(t => { totalSkill += (t.total_nodes || 0); if (t.total_nodes > 0) allCubes.push({cube_id: t.cube_id, type:'skill', total_nodes: t.total_nodes}); });
+        this.entities = allCubes;
+        this.statsCards = {
+          'Cube': cubeId,
+          'Text节点': totalText,
+          'Pref节点': totalPref,
+          'Tool节点': totalTool,
+          'Skill节点': totalSkill,
+        };
+      } catch (e) { this.error = e.message; }
+      this.loading = false;
+    },
+
+    viewEntity(cubeId) {
+      this.memCubeId = cubeId;
+      this.currentPage = 1;
+      this.page = 'memories';
+      this.loadMemories();
+    },
+
+    async archiveEntity(cubeId) {
+      // 软删归档:逐条调 delete_memory_by_record_id(hard_delete=false),可恢复。
+      // 不用 delete_memory(filter 模式),因为那是硬删不可恢复。
+      if (!confirm(`确认归档实体 ${cubeId} 的所有记忆?\n\n将逐条软删除(移入回收站,可通过 record_id 恢复)。`)) return;
+      try {
+        // 先拿该 cube 的全部 memory id
+        const data = await this.api('/product/get_memory', {
+          method: 'POST',
+          body: JSON.stringify({ mem_cube_id: cubeId, page: 1, page_size: 1000 }),
+        });
+        const mems = this.extractMemories(data);
+        if (mems.length === 0) { this.showToast(`${cubeId} 无记忆`); return; }
+        // 逐条软删(批量硬删接口不支持软删,只能逐条走 record_id)
+        let ok = 0;
+        for (const m of mems) {
+          try {
+            await this.api('/product/delete_memory_by_record_id', {
+              method: 'POST',
+              body: JSON.stringify({ mem_cube_id: cubeId, record_id: m.id, hard_delete: false }),
+            });
+            ok++;
+          } catch (e) { /* 单条失败继续 */ }
+        }
+        this.showToast(`已归档 ${ok}/${mems.length} 条(软删,可恢复)`);
+        this.loadOverview();
+      } catch (e) { this.showToast('归档失败: ' + e.message, 'error'); }
+    },
+
+    // ===== Requests 操作 =====
+    async loadRequests() {
+      try {
+        const data = await this.api('/product/requests?limit=100');
+        const list = data?.data || [];
+        this.requests = list.slice().reverse(); // 最新在前
+      } catch (e) { this.requests = []; }
+    },
+
+    setupPolling() {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
+      if (this.autoRefresh === '0') { this.polling = false; return; }
+      this.polling = true;
+      const ms = parseInt(this.autoRefresh);
+      this._pollTimer = setInterval(() => {
+        if (!document.hidden) this.loadRequests();
+      }, ms);
+    },
+
+    // ===== Settings 操作 =====
+    async loadConfig() {
+      try {
+        const data = await this.api('/product/config');
+        this.config = data?.data || {};
+      } catch (e) { this.config = {}; }
+    },
+
+    // ===== 页面切换时自动加载对应数据(用 $watch 在 init 里监听) =====
+
+    // ===== Graph 图谱可视化 =====
+    async loadGraph() {
+      if (!this.graphCubeId.trim()) { this.showToast('Cube ID 必填', 'error'); return; }
+      this.graphLoading = true; this.graphStats = '';
+      try {
+        const data = await this.api(`/product/export_graph?user_name=${encodeURIComponent(this.graphCubeId)}&page=1&page_size=${this.graphPageSize}`, {
+          method: 'POST',
+        });
+        const d = data?.data || {};
+        const nodes = d.nodes || [];
+        const edges = d.edges || [];
+        if (nodes.length === 0) { this.showToast('无图谱数据'); this.graphLoading = false; return; }
+        this.graphStats = `${nodes.length}/${d.total_nodes} 节点, ${edges.length}/${d.total_edges} 边`;
+        this.renderGraph(nodes, edges);
+      } catch (e) { this.showToast('图谱加载失败: ' + e.message, 'error'); }
+      this.graphLoading = false;
+    },
+
+    renderGraph(nodes, edges) {
+      // vis-network 全局变量(standalone build)
+      const visNodes = new vis.DataSet(nodes.map(n => ({
+        id: n.id,
+        label: n.label || n.id.slice(0, 8),
+        title: n.full_memory || n.label,  // hover 显示完整内容
+        group: n.memory_type || 'text',
+      })));
+      const visEdges = new vis.DataSet(edges);
+      const container = document.getElementById('graph-container');
+      if (!container) return;
+      // 销毁旧实例
+      if (this._visNetwork) { this._visNetwork.destroy(); }
+      this._visNetwork = new vis.Network(container, { nodes: visNodes, edges: visEdges }, {
+        nodes: { shape: 'dot', size: 16, font: { size: 11 } },
+        edges: { arrows: 'to', color: { color: '#cbd5e1', highlight: '#6366f1' }, width: 1 },
+        groups: {
+          text: { color: { background: '#6366f1', border: '#4f46e5' }, font: { color: 'white' } },
+          skill: { color: { background: '#a855f7', border: '#9333ea' }, font: { color: 'white' } },
+          tool: { color: { background: '#f59e0b', border: '#d97706' }, font: { color: 'white' } },
+          pref: { color: { background: '#10b981', border: '#059669' }, font: { color: 'white' } },
+        },
+        physics: {
+          stabilization: { iterations: 100, updateInterval: 25 },
+          barnesHut: { gravitationalConstant: -3000, springLength: 120 },
+        },
+        interaction: { hover: true, zoomView: true, dragView: true },
+      });
+      // 点击节点 → 显示详情
+      this._visNetwork.on('click', (params) => {
+        if (params.nodes.length > 0) this.showDetail(params.nodes[0]);
+      });
+    },
+
+    // ===== 工具方法 =====
+    formatTime(ts) {
+      if (!ts) return '';
+      try {
+        const d = typeof ts === 'number' ? new Date(ts > 1e12 ? ts : ts * 1000) : new Date(ts);
+        return d.toLocaleString('zh-CN', { hour12: false });
+      } catch { return String(ts); }
+    },
+
+    formatReqTime(ts) {
+      if (!ts) return '';
+      try { return new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour12: false }); }
+      catch { return ''; }
+    },
+
+    methodColor(m) {
+      const colors = { GET: 'bg-blue-100 text-blue-700', POST: 'bg-green-100 text-green-700', DELETE: 'bg-red-100 text-red-700', PUT: 'bg-amber-100 text-amber-700' };
+      return colors[m] || 'bg-slate-100 text-slate-600';
+    },
+  };
+}
+
+// page 切换自动加载数据
+document.addEventListener('alpine:init', () => {});
+</script>
+</body>
+</html>

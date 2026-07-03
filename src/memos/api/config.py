@@ -299,6 +299,25 @@ class APIConfig:
         }
 
     @staticmethod
+    def deepseek_config() -> dict[str, Any]:
+        """Get DeepSeek configuration.
+
+        DeepSeek 提供 OpenAI 兼容 API,但 api_base/api_key 不能复用 openai_config,
+        否则会用 OPENAI_API_KEY 打到 https://api.openai.com 导致 404/鉴权失败。
+        本项目约定统一用 MOS_CHAT_API_KEY / MOS_CHAT_API_BASE(.env 实际用法)。
+        """
+        return {
+            "model_name_or_path": os.getenv("MOS_CHAT_MODEL", "deepseek-chat"),
+            "temperature": float(os.getenv("MOS_CHAT_TEMPERATURE", "0.8")),
+            "max_tokens": int(os.getenv("MOS_MAX_TOKENS", "8000")),
+            "top_p": float(os.getenv("MOS_TOP_P", "0.9")),
+            "top_k": int(os.getenv("MOS_TOP_K", "50")),
+            "remove_think_prefix": True,
+            "api_key": os.getenv("MOS_CHAT_API_KEY", "your-api-key-here"),
+            "api_base": os.getenv("MOS_CHAT_API_BASE", "https://api.deepseek.com"),
+        }
+
+    @staticmethod
     def vllm_config() -> dict[str, Any]:
         """Get Qwen configuration."""
         return {
@@ -957,6 +976,7 @@ class APIConfig:
         qwen_config = APIConfig.qwen_config()
         vllm_config = APIConfig.vllm_config()
         minimax_config = APIConfig.minimax_config()
+        deepseek_config = APIConfig.deepseek_config()
         reader_config = APIConfig.get_reader_config()
 
         backend_model = {
@@ -964,6 +984,7 @@ class APIConfig:
             "huggingface": qwen_config,
             "vllm": vllm_config,
             "minimax": minimax_config,
+            "deepseek": deepseek_config,
         }
         backend = os.getenv("MOS_CHAT_MODEL_PROVIDER", "openai")
         mysql_config = APIConfig.get_mysql_config()
@@ -1084,6 +1105,7 @@ class APIConfig:
         qwen_config = APIConfig.qwen_config()
         vllm_config = APIConfig.vllm_config()
         minimax_config = APIConfig.minimax_config()
+        deepseek_config = APIConfig.deepseek_config()
         mysql_config = APIConfig.get_mysql_config()
         reader_config = APIConfig.get_reader_config()
         backend = os.getenv("MOS_CHAT_MODEL_PROVIDER", "openai")
@@ -1092,6 +1114,7 @@ class APIConfig:
             "huggingface": qwen_config,
             "vllm": vllm_config,
             "minimax": minimax_config,
+            "deepseek": deepseek_config,
         }
         # Create MOSConfig
         config_dict = {

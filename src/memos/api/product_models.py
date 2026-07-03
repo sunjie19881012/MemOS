@@ -315,6 +315,14 @@ class ConfigResponse(BaseResponse[None]):
     """Response model for configuration endpoint."""
 
 
+class DashboardConfigResponse(BaseResponse[dict]):
+    """Response model for Dashboard /config endpoint (whitelisted runtime config)."""
+
+
+class DashboardRequestsResponse(BaseResponse[list]):
+    """Response model for Dashboard /requests endpoint (recent audit log entries)."""
+
+
 class SearchResponse(BaseResponse[dict]):
     """Response model for search operations."""
 

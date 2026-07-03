@@ -98,4 +98,22 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 f"Request Exception Error: source: {self.source}, path: {request.url.path}, error: {e}, cost: {(end_time - start_time) * 1000:.2f}ms"
             )
 
+        # 审计缓冲:独立 try/except 兜底,写入失败绝不影响主链路。
+        # 放在 return 之前,确保即使上方 logger 抛异常也能执行。
+        try:
+            from memos.api.middleware.audit_buffer import audit_buffer
+
+            audit_buffer.append(
+                {
+                    "ts": end_time,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": response.status_code,
+                    "duration_ms": round((end_time - start_time) * 1000, 1),
+                    "trace_id": trace_id,
+                }
+            )
+        except Exception:
+            pass  # 审计写入失败静默,不阻断请求
+
         return response
