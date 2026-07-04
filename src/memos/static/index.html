@@ -264,6 +264,52 @@
         </div>
       </div>
 
+
+    <!-- ============ 使用指南页 ============ -->
+    <div x-show="page === 'guide'" class="space-y-6">
+      <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
+        ⚠️ 本指南基于 MemOS v2.0.20 实测（2026-07-04）。API 以 /docs Swagger 为准。
+      </div>
+      <div class="bg-white rounded-lg border border-slate-200 p-6">
+        <h2 class="text-lg font-semibold text-slate-800 mb-4">📚 使用指南</h2>
+        <div class="space-y-4 text-sm text-slate-700 leading-6">
+          <div>
+            <h3 class="font-semibold text-slate-800 mb-1">搜索参数</h3>
+            <ul class="list-disc pl-5">
+              <li><code>mode</code>: fast/fine/mixture</li>
+              <li><code>relativity</code>: 阈值 0-1（默认 0.45）</li>
+              <li><code>top_k</code>: 返回条数（默认 10）</li>
+              <li>★ 软删记录自动过滤</li>
+            </ul>
+            <div class="mt-2 p-2 bg-red-50 rounded text-xs text-red-700">
+              ⚠️ filter 仅支持 created_at，不支持 tags/id
+            </div>
+          </div>
+          <div>
+            <h3 class="font-semibold text-slate-800 mb-1">删除策略</h3>
+            <ul class="list-disc pl-5">
+              <li>默认 dry_run（预览）→ 软删（可恢复）→ 硬删（仅敏感信息，日≤10条）</li>
+              <li>软删后搜索自动过滤（bridge client-side）</li>
+            </ul>
+          </div>
+          <div>
+            <h3 class="font-semibold text-slate-800 mb-1">存储策略</h3>
+            <ul class="list-disc pl-5">
+              <li>追加（首选）→ 软删标记 → 硬删（仅敏感信息）</li>
+              <li>update 有 bug 暂不可用</li>
+            </ul>
+          </div>
+          <div>
+            <h3 class="font-semibold text-slate-800 mb-1">常见坑</h3>
+            <ol class="list-decimal pl-5">
+              <li>embedding 断裂 → search 静默返回空</li>
+              <li>llama 必须 --host 0.0.0.0 + ufw 放行 bridge</li>
+              <li>filter 不支持 tags</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </div>
     </main>
   </div>
 
@@ -366,6 +412,7 @@ function dashboardApp() {
       { key: 'overview', label: '概览' },
       { key: 'requests', label: 'Requests' },
       { key: 'settings', label: 'Settings' },
+      { key: 'guide', label: '使用指南' },
     ],
 
     // ===== 全局状态 =====
