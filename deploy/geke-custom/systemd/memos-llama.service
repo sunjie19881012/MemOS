@@ -1,0 +1,17 @@
+[Unit]
+Description=MemOS llama.cpp bge-m3 embedding server (port 38081)
+After=network.target
+
+[Service]
+Type=simple
+Environment=LD_LIBRARY_PATH=/home/day/work/my_apps/llama.cpp-src/build/bin
+WorkingDirectory=/home/day/work/my_apps/llama.cpp-src/build
+ExecStart=/home/day/work/my_apps/llama.cpp-src/build/bin/llama-server \
+  -m /opt/memos-models/bge-m3-Q8_0.gguf \
+  --host 0.0.0.0 --port 38081 \
+  -ngl 0 --embeddings -c 8192 -b 8192 -ub 512 --no-webui
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

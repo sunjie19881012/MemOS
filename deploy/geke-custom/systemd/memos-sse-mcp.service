@@ -1,0 +1,17 @@
+[Unit]
+Description=MemOS SSE MCP server (port 48001, bridges to memos-api:38001)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=/home/day/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=MEMOS_URL=http://127.0.0.1:38001
+Environment=MEMOS_USER_ID=opencode
+WorkingDirectory=/var/lib/memos-data/custom
+ExecStart=/home/day/.local/bin/mcp-proxy --stateless --port 48001 --host 0.0.0.0 -- python3 /var/lib/memos-data/custom/mcp_bridge.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
