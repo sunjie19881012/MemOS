@@ -776,6 +776,8 @@ class APIConfig:
                     "path": os.getenv("QDRANT_PATH"),
                     "url": os.getenv("QDRANT_URL"),
                     "api_key": os.getenv("QDRANT_API_KEY"),
+                        "hnsw_config": {"m": 32, "ef_construct": 200},
+                        "optimizer_config": {"indexing_threshold": 1000},
                 },
             },
         }
