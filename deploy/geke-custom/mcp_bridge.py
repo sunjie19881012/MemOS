@@ -365,18 +365,26 @@ async def call_tool(name, arguments):
                     payload["mem_cube_id"] = cube_ids[0]
                 resp = await client.post(f"{MEMOS_URL}/product/search", json=payload)
             else:
-                all_results = {}
-                for cid in cube_ids:
-                    p = dict(payload)
+                # Parallel fetch all cubes via asyncio.gather
+                async def _fetch_one(cid):
+                    import copy
+                    p = copy.deepcopy(payload)
                     p["mem_cube_id"] = cid
                     try:
                         r = await client.post(f"{MEMOS_URL}/product/search", json=p)
                         if r.status_code == 200:
-                            all_results[cid] = r.json()
+                            return (cid, r.json())
                     except Exception:
                         pass
+                    return (cid, None)
+
+                tasks = [_fetch_one(cid) for cid in cube_ids]
+                results_list = await asyncio.gather(*tasks)
+
                 merged = {}
-                for cid, rd in all_results.items():
+                for cid, rd in results_list:
+                    if rd is None:
+                        continue
                     d = rd.get("data", {})
                     if isinstance(d, dict):
                         for mt, bucket in d.items():
@@ -429,9 +437,38 @@ async def call_tool(name, arguments):
                                 "key": meta.get("key"),
                                 "tags": meta.get("tags", []),
                                 "confidence": meta.get("confidence"),
+                                "relativity": meta.get("relativity"),
                                 "memory_type": mt,
                                 "created_at": meta.get("created_at"),
                             })
+
+            # ★ 全局 top_k：固定技能槽位 + 回填 + 去重
+            # text_mem 与 skill_mem 没有统一排序，按槽位分配，空缺由 text 回填。
+            global_top_k = arguments.get("top_k", arguments.get("limit", 5))
+            if global_top_k and len(memories_out) > global_top_k:
+                text_items = [m for m in memories_out if m.get("memory_type") not in ("skill_mem", "tool_mem")]
+                skill_items = [m for m in memories_out if m.get("memory_type") == "skill_mem"]
+                # top_k=1 只能给 text；top_k>=2 最多保留 1 条 skill
+                skill_quota = 1 if global_top_k >= 2 and skill_items else 0
+                text_quota = max(0, global_top_k - skill_quota)
+
+                selected = text_items[:text_quota] + skill_items[:skill_quota]
+
+                # 回填：某个类型不足时用 text 补齐
+                if len(selected) < global_top_k:
+                    remaining = text_items[text_quota:] + skill_items[skill_quota:]
+                    seen = {item.get("id") for item in selected if item.get("id")}
+                    for item in remaining:
+                        if len(selected) >= global_top_k:
+                            break
+                        iid = item.get("id")
+                        if iid and iid in seen:
+                            continue
+                        selected.append(item)
+                        if iid:
+                            seen.add(iid)
+
+                memories_out = selected[:global_top_k]
 
             summary = {
                 "total": len(memories_out),
